@@ -557,64 +557,7 @@
 			{/if}
 
 			{#if help}
-				<hr class=" border-gray-50/30 dark:border-gray-800/30 my-1 p-0" />
-
-				<!-- {$i18n.t('Help')} -->
-
-				{#if $user?.role === 'admin'}
-					<a
-						href="https://docs.openwebui.com"
-						target="_blank"
-						draggable="false"
-						class="flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition cursor-pointer select-none"
-						id="chat-share-button"
-						on:click={() => {
-							show = false;
-						}}
-					>
-						<div class=" self-center mr-3">
-							<QuestionMarkCircle className="size-5" />
-						</div>
-						<div class=" self-center truncate">{$i18n.t('Documentation')}</div>
-					</a>
-
-					<!-- Releases -->
-					<a
-						href="https://github.com/open-webui/open-webui/releases"
-						target="_blank"
-						draggable="false"
-						class="flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition cursor-pointer select-none"
-						id="chat-share-button"
-						on:click={() => {
-							show = false;
-						}}
-					>
-						<div class=" self-center mr-3">
-							<Map className="size-5" />
-						</div>
-						<div class=" self-center truncate">{$i18n.t('Releases')}</div>
-					</a>
-				{/if}
-
-				<button
-					class="flex rounded-xl py-1.5 px-3 w-full hover:bg-gray-50 dark:hover:bg-gray-800 transition cursor-pointer select-none"
-					type="button"
-					id="chat-share-button"
-					on:click={async () => {
-						show = false;
-						showShortcuts.set(!$showShortcuts);
-
-						if ($mobile) {
-							await tick();
-							showSidebar.set(false);
-						}
-					}}
-				>
-					<div class=" self-center mr-3">
-						<Keyboard className="size-5" />
-					</div>
-					<div class=" self-center truncate">{$i18n.t('Keyboard Shortcuts')}</div>
-				</button>
+				<!-- Help menu items intentionally hidden. -->
 			{/if}
 
 			<hr class=" border-gray-50/30 dark:border-gray-800/30 my-1 p-0" />
@@ -636,42 +579,6 @@
 				</div>
 				<div class=" self-center truncate">{$i18n.t('Sign Out')}</div>
 			</button>
-
-			{#if showActiveUsers && ($config?.features?.enable_public_active_users_count || role === 'admin') && usage}
-				{#if usage?.user_count}
-					<hr class=" border-gray-50/30 dark:border-gray-800/30 my-1 p-0" />
-
-					<Tooltip
-						content={usage?.model_ids && usage?.model_ids.length > 0
-							? `${$i18n.t('Running')}: ${usage.model_ids.join(', ')} ✨`
-							: ''}
-					>
-						<div
-							class="flex rounded-xl py-1 px-3 text-xs gap-2.5 items-center"
-							on:mouseenter={() => {
-								if ($config?.features?.enable_public_active_users_count || role === 'admin') {
-									getUsageInfo();
-								}
-							}}
-						>
-							<div class=" flex items-center">
-								<span class="relative flex size-2">
-									<span class="relative inline-flex rounded-full size-2 bg-green-500" />
-								</span>
-							</div>
-
-							<div class=" ">
-								<span class="">
-									{$i18n.t('Active Users')}:
-								</span>
-								<span class=" font-semibold">
-									{usage?.user_count}
-								</span>
-							</div>
-						</div>
-					</Tooltip>
-				{/if}
-			{/if}
 		</div>
 	</div>
 </Dropdown>
