@@ -14,7 +14,8 @@
 		getSessionUser,
 		userSignIn,
 		userSignUp,
-		updateUserTimezone
+		updateUserTimezone,
+		delegatedSignIn
 	} from '$lib/apis/auths';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
@@ -69,10 +70,19 @@
 	};
 
 	const signInHandler = async () => {
-		const sessionUser = await userSignIn(email, password).catch((error) => {
-			toast.error(`${error}`);
-			return null;
-		});
+		let sessionUser = null;
+
+		if ($config?.features.auth_trusted_header ?? false) {
+			sessionUser = await delegatedSignIn().catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+		} else {
+			sessionUser = await userSignIn(email, password).catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+		}
 
 		await setSessionUser(sessionUser);
 	};
