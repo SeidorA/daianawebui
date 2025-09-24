@@ -832,6 +832,61 @@ async def signin(
         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
+@router.post('/delegate', response_model=SessionUserResponse)
+async def delegated_signin(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_async_session),
+):
+    if not WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED)
+
+    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER not in request.headers:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
+
+    email = request.headers[WEBUI_AUTH_TRUSTED_EMAIL_HEADER].lower()
+    name = email
+
+    if WEBUI_AUTH_TRUSTED_NAME_HEADER:
+        name = request.headers.get(WEBUI_AUTH_TRUSTED_NAME_HEADER, email)
+        try:
+            name = urllib.parse.unquote(name, encoding='utf-8')
+        except Exception:
+            pass
+
+    if not await Users.get_user_by_email(email.lower(), db=db):
+        await signup_handler(
+            request,
+            email,
+            str(uuid.uuid4()),
+            name,
+            db=db,
+            source='trusted_header',
+        )
+
+    user = await Auths.authenticate_user_by_email(email, db=db)
+    if not user:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    if WEBUI_AUTH_TRUSTED_GROUPS_HEADER:
+        group_names = request.headers.get(WEBUI_AUTH_TRUSTED_GROUPS_HEADER, '').split(',')
+        group_names = [name.strip() for name in group_names if name.strip()]
+
+        if group_names:
+            await Groups.sync_groups_by_group_names(user.id, group_names, db=db)
+
+    if WEBUI_AUTH_TRUSTED_ROLE_HEADER:
+        trusted_role = request.headers.get(WEBUI_AUTH_TRUSTED_ROLE_HEADER, '').lower().strip()
+        if trusted_role in {'admin', 'user', 'pending'}:
+            if user.role != trusted_role:
+                await Users.update_user_role_by_id(user.id, trusted_role, db=db)
+                user = await Users.get_user_by_id(user.id, db=db)
+        elif trusted_role:
+            log.warning(f'Ignoring invalid trusted role header value: {trusted_role}')
+
+    return await create_session_response(request, user, db, response, set_cookie=True, source='trusted_header')
+
+
 ############################
 # SignUp
 ############################
@@ -902,6 +957,9 @@ async def signup(
     form_data: SignupForm,
     db: AsyncSession = Depends(get_async_session),
 ):
+    if WEBUI_AUTH_TRUSTED_EMAIL_HEADER:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED)
+
     has_users = await Users.has_users(db=db)
 
     if WEBUI_AUTH:
