@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
+import hashlib
+import hmac
+import json
 import logging
 import re
 import time
@@ -36,6 +40,7 @@ from open_webui.env import (
     WEBUI_AUTH_TRUSTED_GROUPS_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     WEBUI_AUTH_TRUSTED_ROLE_HEADER,
+    WEBUI_AUTH_HANDOFF_SECRET,
 )
 from open_webui.internal.db import get_async_session
 from open_webui.models.auths import (
@@ -243,6 +248,60 @@ class SessionUserInfoResponse(SessionUserResponse, UserStatus):
     bio: str | None = None
     gender: str | None = None
     date_of_birth: datetime.date | None = None
+
+
+class HandoffForm(BaseModel):
+    token: str
+
+
+def _decode_base64url_json(value: str):
+    padding = '=' * (-len(value) % 4)
+    return json.loads(base64.urlsafe_b64decode(f'{value}{padding}'))
+
+
+def _decode_handoff_token(token: str):
+    if not WEBUI_AUTH_HANDOFF_SECRET:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='WEBUI_AUTH_HANDOFF_SECRET is not configured',
+        )
+
+    try:
+        header, payload, signature = token.split('.', 2)
+    except ValueError:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    signed_value = f'{header}.{payload}'.encode('utf-8')
+    expected_signature = base64.urlsafe_b64encode(
+        hmac.new(
+            WEBUI_AUTH_HANDOFF_SECRET.encode('utf-8'),
+            signed_value,
+            hashlib.sha256,
+        ).digest()
+    ).decode('utf-8').rstrip('=')
+
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    try:
+        decoded_header = _decode_base64url_json(header)
+        decoded_payload = _decode_base64url_json(payload)
+    except Exception:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    if decoded_header.get('alg') != 'HS256':
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    exp = decoded_payload.get('exp')
+    now = int(time.time())
+    if not isinstance(exp, int) or exp <= now or exp > now + 60:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    email = decoded_payload.get('email')
+    if not isinstance(email, str) or not validate_email_format(email.lower()):
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT)
+
+    return decoded_payload
 
 
 @router.get('/', response_model=SessionUserInfoResponse)
@@ -885,6 +944,34 @@ async def delegated_signin(
             log.warning(f'Ignoring invalid trusted role header value: {trusted_role}')
 
     return await create_session_response(request, user, db, response, set_cookie=True, source='trusted_header')
+
+
+@router.post('/handoff', response_model=SessionUserResponse)
+async def handoff(
+    request: Request,
+    response: Response,
+    form_data: HandoffForm,
+    db: AsyncSession = Depends(get_async_session),
+):
+    payload = _decode_handoff_token(form_data.token)
+    email = payload['email'].lower()
+    name = payload.get('name') if isinstance(payload.get('name'), str) else email
+
+    if not await Users.get_user_by_email(email.lower(), db=db):
+        await signup_handler(
+            request,
+            email,
+            str(uuid.uuid4()),
+            name,
+            db=db,
+            source='handoff',
+        )
+
+    user = await Auths.authenticate_user_by_email(email, db=db)
+    if not user:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
+
+    return await create_session_response(request, user, db, response, set_cookie=True, source='handoff')
 
 
 ############################

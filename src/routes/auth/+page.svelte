@@ -12,10 +12,11 @@
 	import {
 		ldapUserSignIn,
 		getSessionUser,
+		getSessionUserFromCookie,
 		userSignIn,
+		userSignInWithHandoff,
 		userSignUp,
-		updateUserTimezone,
-		delegatedSignIn
+		updateUserTimezone
 	} from '$lib/apis/auths';
 
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
@@ -75,7 +76,7 @@
 		let sessionUser = null;
 
 		if ($config?.features.auth_trusted_header ?? false) {
-			sessionUser = await delegatedSignIn().catch((error) => {
+			sessionUser = await userSignIn('', '').catch((error) => {
 				toast.error(`${error}`);
 				return null;
 			});
@@ -87,6 +88,25 @@
 		}
 
 		await setSessionUser(sessionUser);
+	};
+
+	const handoffSignInHandler = async (handoffToken: string, redirectPath: string | null) => {
+		const sessionUser = await userSignInWithHandoff(handoffToken).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+
+		await setSessionUser(sessionUser, redirectPath || '/');
+		return !!sessionUser;
+	};
+
+	const isSafeReturnTo = (returnTo: string) => {
+		try {
+			const url = new URL(returnTo);
+			return url.protocol === 'http:' || url.protocol === 'https:';
+		} catch {
+			return false;
+		}
 	};
 
 	const signUpHandler = async () => {
@@ -135,6 +155,13 @@
 	};
 
 	const oauthCallbackHandler = async () => {
+		const sessionUserFromCookie = await getSessionUserFromCookie().catch(() => null);
+
+		if (sessionUserFromCookie) {
+			await setSessionUser(sessionUserFromCookie, localStorage.getItem('redirectPath') || null);
+			return true;
+		}
+
 		// Get the value of the 'token' cookie
 		function getCookie(name) {
 			const match = document.cookie.match(
@@ -145,7 +172,7 @@
 
 		const token = getCookie('token');
 		if (!token) {
-			return;
+			return false;
 		}
 
 		const sessionUser = await getSessionUser(token).catch((error) => {
@@ -154,18 +181,35 @@
 		});
 
 		if (!sessionUser) {
-			return;
+			return false;
 		}
 
 		localStorage.token = token;
 		await setSessionUser(sessionUser, localStorage.getItem('redirectPath') || null);
+		return true;
 	};
 
 	let onboarding = false;
 
 	onMount(async () => {
 		const redirectPath = $page.url.searchParams.get('redirect');
-		if ($user) {
+		const handoffToken = $page.url.searchParams.get('handoff');
+		const returnTo = $page.url.searchParams.get('returnTo');
+
+		if (handoffToken) {
+			if (redirectPath) {
+				localStorage.setItem('redirectPath', redirectPath);
+			}
+
+			const signedIn = await handoffSignInHandler(handoffToken, redirectPath);
+			if (signedIn) {
+				if (returnTo && isSafeReturnTo(returnTo)) {
+					window.location.assign(returnTo);
+				}
+				return;
+			}
+		}
+		if ($user !== undefined) {
 			goto(redirectPath || '/');
 		} else {
 			if (redirectPath) {
@@ -178,7 +222,7 @@
 			toast.error(error);
 		}
 
-		await oauthCallbackHandler();
+		const restoredSession = await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
