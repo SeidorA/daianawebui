@@ -110,6 +110,33 @@ export const getSessionUser = async (token: string) => {
 	return res;
 };
 
+export const getSessionUserFromCookie = async () => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/`, {
+		method: 'GET',
+		headers: {
+			'Content-Type': 'application/json'
+		},
+		credentials: 'include'
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			console.error(err);
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
 export const ldapUserSignIn = async (user: string, password: string) => {
 	let error = null;
 
@@ -330,6 +357,34 @@ export const userSignIn = async (email: string, password: string) => {
 		.catch((err) => {
 			console.error(err);
 
+			error = err.detail;
+			return null;
+		});
+
+	if (error) {
+		throw error;
+	}
+
+	return res;
+};
+
+export const userSignInWithHandoff = async (token: string) => {
+	let error = null;
+
+	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/handoff`, {
+		method: 'POST',
+		headers: {
+			'Content-Type': 'application/json'
+		},
+		credentials: 'include',
+		body: JSON.stringify({ token })
+	})
+		.then(async (res) => {
+			if (!res.ok) throw await res.json();
+			return res.json();
+		})
+		.catch((err) => {
+			console.error(err);
 			error = err.detail;
 			return null;
 		});
@@ -619,34 +674,6 @@ export const deleteOAuthSession = async (token: string, provider: string) => {
 		})
 		.catch((err) => {
 			console.error(err);
-			error = err.detail;
-			return null;
-		});
-
-	if (error) {
-		throw error;
-	}
-
-	return res;
-};
-
-export const delegatedSignIn = async () => {
-	let error = null;
-
-	const res = await fetch(`${WEBUI_API_BASE_URL}/auths/delegate`, {
-		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json'
-		},
-		credentials: 'include'
-	})
-		.then(async (res) => {
-			if (!res.ok) throw await res.json();
-			return res.json();
-		})
-		.catch((err) => {
-			console.error(err);
-
 			error = err.detail;
 			return null;
 		});
