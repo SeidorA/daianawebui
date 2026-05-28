@@ -3,6 +3,10 @@ import uuid
 import time
 import datetime
 import logging
+import base64
+import hashlib
+import hmac
+import json
 from aiohttp import ClientSession
 
 from open_webui.models.auths import (
@@ -27,6 +31,7 @@ from open_webui.env import (
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     WEBUI_AUTH_TRUSTED_GROUPS_HEADER,
+    WEBUI_AUTH_HANDOFF_SECRET,
     WEBUI_AUTH_COOKIE_SAME_SITE,
     WEBUI_AUTH_COOKIE_SECURE,
     WEBUI_AUTH_SIGNOUT_REDIRECT_URL,
@@ -80,6 +85,10 @@ class SessionUserInfoResponse(SessionUserResponse):
     date_of_birth: Optional[datetime.date] = None
 
 
+class HandoffForm(BaseModel):
+    token: str
+
+
 def _issue_session_response(request: Request, response: Response, user: UserModel):
     if not user:
         raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
@@ -126,22 +135,9 @@ def _issue_session_response(request: Request, response: Response, user: UserMode
     }
 
 
-async def _handle_trusted_header_signin(request: Request, response: Response):
-    header_email = request.app.state.AUTH_TRUSTED_EMAIL_HEADER
-    if not header_email:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
-        )
-
-    email_value = request.headers.get(header_email)
-    if not email_value:
-        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
-
-    email = email_value.lower()
-
-    header_name = request.app.state.AUTH_TRUSTED_NAME_HEADER
-    name = request.headers.get(header_name, email) if header_name else email
-
+async def _get_or_create_handoff_user(
+    request: Request, email: str, name: str, group_names: Optional[str] = None
+):
     had_users = Users.has_users()
     user = Users.get_user_by_email(email)
     created_user = False
@@ -168,9 +164,7 @@ async def _handle_trusted_header_signin(request: Request, response: Response):
             if updated_user:
                 user = updated_user
 
-    header_groups = request.app.state.AUTH_TRUSTED_GROUPS_HEADER
-    if header_groups and user and user.role != "admin":
-        group_names = request.headers.get(header_groups, "")
+    if group_names and user and user.role != "admin":
         if group_names:
             parsed_groups = [g.strip() for g in group_names.split(",") if g.strip()]
             if parsed_groups:
@@ -196,6 +190,88 @@ async def _handle_trusted_header_signin(request: Request, response: Response):
                 },
             )
 
+    return user
+
+
+async def _handle_trusted_header_signin(request: Request, response: Response):
+    header_email = request.app.state.AUTH_TRUSTED_EMAIL_HEADER
+    if not header_email:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, detail=ERROR_MESSAGES.ACCESS_PROHIBITED
+        )
+
+    email_value = request.headers.get(header_email)
+    if not email_value:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TRUSTED_HEADER)
+
+    email = email_value.lower()
+
+    header_name = request.app.state.AUTH_TRUSTED_NAME_HEADER
+    name = request.headers.get(header_name, email) if header_name else email
+
+    header_groups = request.app.state.AUTH_TRUSTED_GROUPS_HEADER
+    group_names = request.headers.get(header_groups, "") if header_groups else None
+    user = await _get_or_create_handoff_user(request, email, name, group_names)
+
+    return _issue_session_response(request, response, user)
+
+
+def _decode_base64url_json(value: str):
+    padding = "=" * (-len(value) % 4)
+    return json.loads(base64.urlsafe_b64decode(f"{value}{padding}"))
+
+
+def _decode_handoff_token(token: str):
+    if not WEBUI_AUTH_HANDOFF_SECRET:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="WEBUI_AUTH_HANDOFF_SECRET is not configured",
+        )
+
+    try:
+        header, payload, signature = token.split(".", 2)
+    except ValueError:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    signed_value = f"{header}.{payload}".encode("utf-8")
+    expected_signature = base64.urlsafe_b64encode(
+        hmac.new(
+            WEBUI_AUTH_HANDOFF_SECRET.encode("utf-8"), signed_value, hashlib.sha256
+        ).digest()
+    ).decode("utf-8").rstrip("=")
+
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    try:
+        decoded_header = _decode_base64url_json(header)
+        decoded_payload = _decode_base64url_json(payload)
+    except Exception:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    if decoded_header.get("alg") != "HS256":
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    exp = decoded_payload.get("exp")
+    now = int(time.time())
+    if not isinstance(exp, int) or exp <= now or exp > now + 60:
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_TOKEN)
+
+    email = decoded_payload.get("email")
+    if not isinstance(email, str) or not validate_email_format(email.lower()):
+        raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_EMAIL_FORMAT)
+
+    return decoded_payload
+
+
+async def _handle_handoff_signin(
+    request: Request, response: Response, form_data: HandoffForm
+):
+    payload = _decode_handoff_token(form_data.token)
+    email = payload["email"].lower()
+    name = payload.get("name") if isinstance(payload.get("name"), str) else email
+    user = await _get_or_create_handoff_user(request, email, name)
+
     return _issue_session_response(request, response, user)
 
 
@@ -206,7 +282,9 @@ async def get_session_user(
 
     auth_header = request.headers.get("Authorization")
     auth_token = get_http_authorization_cred(auth_header)
-    token = auth_token.credentials
+    token = auth_token.credentials if auth_token else request.cookies.get("token")
+    if not token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     data = decode_token(token)
 
     expires_at = None
@@ -611,9 +689,9 @@ async def signin(request: Request, response: Response, form_data: SigninForm):
     raise HTTPException(400, detail=ERROR_MESSAGES.INVALID_CRED)
 
 
-@router.post("/delegate", response_model=SessionUserResponse)
-async def delegated_signin(request: Request, response: Response):
-    return await _handle_trusted_header_signin(request, response)
+@router.post("/handoff", response_model=SessionUserResponse)
+async def handoff(request: Request, response: Response, form_data: HandoffForm):
+    return await _handle_handoff_signin(request, response, form_data)
 
 
 ############################
