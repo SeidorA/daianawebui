@@ -23,6 +23,7 @@
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
 
 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
+	import { parseHandoffUrl } from '$lib/utils/handoff';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import OnBoarding from '$lib/components/OnBoarding.svelte';
@@ -48,7 +49,6 @@
 
 	const setSessionUser = async (sessionUser, redirectPath: string | null = null) => {
 		if (sessionUser) {
-			console.log(sessionUser);
 			toast.success($i18n.t(`You're now logged in.`));
 			if (sessionUser.token) {
 				localStorage.token = sessionUser.token;
@@ -193,10 +193,14 @@
 
 	onMount(async () => {
 		const redirectPath = $page.url.searchParams.get('redirect');
-		const handoffToken = $page.url.searchParams.get('handoff');
+		const { token: handoffToken, cleanupUrl: handoffCleanupUrl } = parseHandoffUrl(
+			window.location.href
+		);
 		const returnTo = $page.url.searchParams.get('returnTo');
 
 		if (handoffToken) {
+			window.history.replaceState(window.history.state, '', handoffCleanupUrl);
+
 			if (redirectPath) {
 				localStorage.setItem('redirectPath', redirectPath);
 			}
