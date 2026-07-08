@@ -23,7 +23,11 @@
 	import { WEBUI_NAME, config, user, socket } from '$lib/stores';
 
 	import { generateInitialsImage, canvasPixelTest, getUserTimezone } from '$lib/utils';
-	import { parseHandoffUrl } from '$lib/utils/handoff';
+	import {
+		isSafeReturnTo,
+		parseAllowedReturnToOrigins,
+		parseHandoffUrl
+	} from '$lib/utils/handoff';
 
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import OnBoarding from '$lib/components/OnBoarding.svelte';
@@ -100,14 +104,9 @@
 		return !!sessionUser;
 	};
 
-	const isSafeReturnTo = (returnTo: string) => {
-		try {
-			const url = new URL(returnTo);
-			return url.protocol === 'http:' || url.protocol === 'https:';
-		} catch {
-			return false;
-		}
-	};
+	const allowedReturnToOrigins = parseAllowedReturnToOrigins(
+		import.meta.env.PUBLIC_WEBUI_AUTH_RETURN_TO_ORIGINS
+	);
 
 	const signUpHandler = async () => {
 		if ($config?.features?.enable_signup_password_confirmation) {
@@ -207,7 +206,10 @@
 
 			const signedIn = await handoffSignInHandler(handoffToken, redirectPath);
 			if (signedIn) {
-				if (returnTo && isSafeReturnTo(returnTo)) {
+				if (
+					returnTo &&
+					isSafeReturnTo(returnTo, window.location.origin, allowedReturnToOrigins)
+				) {
 					window.location.assign(returnTo);
 				}
 				return;
@@ -226,7 +228,7 @@
 			toast.error(error);
 		}
 
-		const restoredSession = await oauthCallbackHandler();
+		await oauthCallbackHandler();
 		form = $page.url.searchParams.get('form');
 
 		// Auto-redirect to SSO when OAUTH_AUTO_REDIRECT is enabled and the
