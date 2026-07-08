@@ -313,3 +313,6 @@ cypress/screenshots
 .cptr
 # Local Pi runtime state
 .atl/
+
+# Local browser automation artifacts
+.playwright-cli/
