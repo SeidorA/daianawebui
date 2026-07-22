@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import hmac
+import importlib
 import json
 import time
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import pytest
 from fastapi import HTTPException, Response, status
 
 from open_webui.routers import auths
+
+main = importlib.import_module('open_webui.main')
 
 
 def _b64url(data: dict) -> str:
@@ -25,6 +28,39 @@ def _handoff_token(secret: str, payload: dict, header: dict | None = None) -> st
         .rstrip('=')
     )
     return f'{encoded_header}.{encoded_payload}.{signature}'
+
+
+async def _get_unauthenticated_app_config(monkeypatch):
+    async def fake_has_users():
+        return True
+
+    async def fake_get_many(*_keys):
+        return {}
+
+    monkeypatch.setattr(main.Users, 'has_users', fake_has_users)
+    monkeypatch.setattr(main.Config, 'get_many', fake_get_many)
+
+    return await main.get_app_config(SimpleNamespace(headers={}, cookies={}))
+
+
+@pytest.mark.asyncio
+async def test_app_config_exposes_return_to_origins_before_authentication(monkeypatch):
+    monkeypatch.setattr(main, 'WEBUI_AUTH_RETURN_TO_ORIGINS', 'https://daiana.example.test')
+
+    config = await _get_unauthenticated_app_config(monkeypatch)
+
+    assert config['auth']['return_to_origins'] == 'https://daiana.example.test'
+
+
+@pytest.mark.asyncio
+async def test_app_config_does_not_expose_handoff_secret(monkeypatch):
+    monkeypatch.setattr(auths, 'WEBUI_AUTH_HANDOFF_SECRET', 'private-handoff-secret')
+
+    config = await _get_unauthenticated_app_config(monkeypatch)
+    serialized_config = json.dumps(config)
+
+    assert 'WEBUI_AUTH_HANDOFF_SECRET' not in serialized_config
+    assert 'private-handoff-secret' not in serialized_config
 
 
 def test_decode_handoff_token_accepts_signed_token_before_expiry(monkeypatch):

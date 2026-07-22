@@ -721,6 +721,10 @@ WEBUI_AUTH_TRUSTED_NAME_HEADER = os.getenv('WEBUI_AUTH_TRUSTED_NAME_HEADER', Non
 WEBUI_AUTH_TRUSTED_GROUPS_HEADER = os.getenv('WEBUI_AUTH_TRUSTED_GROUPS_HEADER', None)
 WEBUI_AUTH_TRUSTED_ROLE_HEADER = os.getenv('WEBUI_AUTH_TRUSTED_ROLE_HEADER', None)
 WEBUI_AUTH_HANDOFF_SECRET = os.getenv('WEBUI_AUTH_HANDOFF_SECRET', None)
+WEBUI_AUTH_RETURN_TO_ORIGINS = os.getenv(
+    'WEBUI_AUTH_RETURN_TO_ORIGINS',
+    os.getenv('PUBLIC_WEBUI_AUTH_RETURN_TO_ORIGINS', ''),
+)
 
 # Custom header name for API key authentication.  Defaults to 'x-api-key'.
 # Useful when Open WebUI sits behind a reverse proxy / API gateway that

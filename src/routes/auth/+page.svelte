@@ -103,7 +103,7 @@
 	};
 
 	const allowedReturnToOrigins = parseAllowedReturnToOrigins(
-		import.meta.env.PUBLIC_WEBUI_AUTH_RETURN_TO_ORIGINS
+		$config?.auth?.return_to_origins ?? import.meta.env.PUBLIC_WEBUI_AUTH_RETURN_TO_ORIGINS
 	);
 
 	const signUpHandler = async () => {
