@@ -331,6 +331,9 @@ type Config = {
 	default_models: string;
 	default_pinned_models?: string | null;
 	default_prompt_suggestions: PromptSuggestion[];
+	auth?: {
+		return_to_origins: string;
+	};
 	features: {
 		auth: boolean;
 		auth_trusted_header: boolean;

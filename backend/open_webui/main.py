@@ -116,6 +116,7 @@ from open_webui.env import (
     WEBUI_ADMIN_EMAIL,
     WEBUI_ADMIN_NAME,
     WEBUI_ADMIN_PASSWORD,
+    WEBUI_AUTH_RETURN_TO_ORIGINS,
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_BUILD_HASH,
     WEBUI_SECRET_KEY,
@@ -2292,6 +2293,9 @@ async def get_app_config(request: Request):
                 else {}
             ),
             'auto_redirect': config.get('oauth.auto_redirect'),
+        },
+        'auth': {
+            'return_to_origins': WEBUI_AUTH_RETURN_TO_ORIGINS,
         },
         'features': {
             # --- Public: required by login/signup page pre-auth ---
