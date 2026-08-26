@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
 import uuid
@@ -15,6 +14,7 @@ from open_webui.models.access_grants import AccessGrantModel, AccessGrants
 from open_webui.models.groups import Groups
 from open_webui.models.prompt_history import PromptHistories
 from open_webui.models.users import User, UserModel, UserResponse, Users
+from open_webui.utils.misc import json_text_variants
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import JSON, BigInteger, Boolean, Column, String, Text, cast, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -103,11 +103,11 @@ class PromptsTable:
         access_grants: list[AccessGrantModel | None] = None,
         db: AsyncSession | None = None,
     ) -> PromptModel:
-        prompt_data = PromptModel.model_validate(prompt).model_dump(exclude={'access_grants'})
-        prompt_data['access_grants'] = (
-            access_grants if access_grants is not None else await self._get_access_grants(prompt_data['id'], db=db)
+        prompt_model = PromptModel.model_validate(prompt)
+        prompt_model.access_grants = (
+            access_grants if access_grants is not None else await self._get_access_grants(prompt_model.id, db=db)
         )
-        return PromptModel.model_validate(prompt_data)
+        return prompt_model
 
     async def insert_new_prompt(
         self, user_id: str, form_data: PromptForm, db: AsyncSession | None = None
@@ -132,7 +132,6 @@ class PromptsTable:
                 )
                 session.add(record)
                 await session.commit()
-                await session.refresh(record)  # populate generated defaults
 
                 await AccessGrants.set_access_grants(
                     'prompt',
@@ -169,7 +168,6 @@ class PromptsTable:
                 if history_entry:
                     record.version_id = history_entry.id
                     await session.commit()
-                    await session.refresh(record)  # re-read version_id
 
                 return await self._to_prompt_model(record, db=session)
             except Exception as e:
@@ -344,9 +342,10 @@ class PromptsTable:
                             'EXISTS (SELECT 1 FROM json_array_elements_text(prompt.tags) t WHERE LOWER(t) = :tag_val)'
                         )
                     else:
-                        # Fallback: LIKE on serialised JSON text (ASCII-safe only)
-                        tag_clause = func.lower(cast(Prompt.tags, String)).like(
-                            f'%{json.dumps(tag_lower, ensure_ascii=False)}%'
+                        # Fallback for dialects with no JSON array function: LIKE on the text.
+                        tags_text = func.lower(cast(Prompt.tags, String))
+                        tag_clause = or_(
+                            *(tags_text.like(f'%"{variant}"%') for variant in json_text_variants(tag_lower))
                         )
                         tag_lower = None
 
@@ -637,7 +636,6 @@ class PromptsTable:
                     prompt.is_active = not prompt.is_active
                     prompt.updated_at = int(time.time())
                     await session.commit()
-                    await session.refresh(prompt)
                     return await self._to_prompt_model(prompt, db=session)
                 return None
         except Exception:

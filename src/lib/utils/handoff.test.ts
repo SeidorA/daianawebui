@@ -31,7 +31,8 @@ describe('handoff URL helpers', () => {
 	});
 
 	it('removes handoff token from query and fragment cleanup URL', () => {
-		const url = 'https://example.test/auth?handoff=query-token&redirect=%2Fchat#handoff=fragment-token';
+		const url =
+			'https://example.test/auth?handoff=query-token&redirect=%2Fchat#handoff=fragment-token';
 		const result = parseHandoffUrl(url);
 
 		expect(result.token).toBe('fragment-token');
@@ -71,11 +72,15 @@ describe('handoff returnTo safety', () => {
 
 		expect(isSafeReturnTo('/chat', baseOrigin, allowedOrigins)).toBe(true);
 		expect(isSafeReturnTo('https://app.example.test/done', baseOrigin, allowedOrigins)).toBe(true);
-		expect(isSafeReturnTo('https://evil.example.test/done', baseOrigin, allowedOrigins)).toBe(false);
+		expect(isSafeReturnTo('https://evil.example.test/done', baseOrigin, allowedOrigins)).toBe(
+			false
+		);
 	});
 
 	it('normalizes configured allowlist values to origins', () => {
-		const allowedOrigins = parseAllowedReturnToOrigins('https://app.example.test/callback, not-a-url');
+		const allowedOrigins = parseAllowedReturnToOrigins(
+			'https://app.example.test/callback, not-a-url'
+		);
 
 		expect(isSafeReturnTo('https://app.example.test/done', baseOrigin, allowedOrigins)).toBe(true);
 		expect(allowedOrigins).not.toContain('not-a-url');
