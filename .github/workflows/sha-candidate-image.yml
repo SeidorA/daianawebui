@@ -1,0 +1,281 @@
+name: Publish Daiana WebUI SHA Candidate Image
+
+env:
+    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+    IMAGE_NAME: cloudseidoranalytics/daianawebui
+
+on:
+    workflow_dispatch:
+        inputs:
+            source_sha:
+                description: 'Exact 40-character commit SHA from develop'
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+concurrency:
+    group: sha-candidate-${{ inputs.source_sha }}
+    cancel-in-progress: false
+
+jobs:
+    prepare:
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        outputs:
+            source_commit: ${{ steps.source.outputs.sha }}
+            tag: ${{ steps.source.outputs.tag }}
+
+        steps:
+            - name: Checkout develop ref
+              uses: actions/checkout@v6.0.2
+              with:
+                  ref: develop
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Resolve and validate source SHA
+              id: source
+              env:
+                  INPUT_SHA: ${{ inputs.source_sha }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  [[ "$INPUT_SHA" =~ ^[A-Fa-f0-9]{40}$ ]] || { echo "Source SHA must contain exactly 40 hexadecimal characters"; exit 1; }
+                  source_sha="$(printf '%s' "$INPUT_SHA" | tr '[:upper:]' '[:lower:]')"
+                  git fetch --no-tags --force origin '+refs/heads/develop:refs/remotes/origin/develop'
+                  git cat-file -e "$source_sha^{commit}" 2>/dev/null || { echo "Source SHA is not a commit in this repository"; exit 1; }
+                  resolved_sha="$(git rev-parse "$source_sha^{commit}")"
+                  [[ "$resolved_sha" == "$source_sha" ]] || { echo "Source SHA did not resolve exactly"; exit 1; }
+                  git merge-base --is-ancestor "$resolved_sha" origin/develop || { echo "Source SHA is not an ancestor of origin/develop"; exit 1; }
+                  echo "sha=$resolved_sha" >> "$GITHUB_OUTPUT"
+                  echo "tag=sha-$resolved_sha" >> "$GITHUB_OUTPUT"
+
+            - name: Checkout exact candidate source
+              uses: actions/checkout@v6.0.2
+              with:
+                  ref: ${{ steps.source.outputs.sha }}
+                  fetch-depth: 1
+                  persist-credentials: false
+
+            - name: Verify checked-out source
+              env:
+                  SOURCE_SHA: ${{ steps.source.outputs.sha }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  checked_out_sha="$(git rev-parse HEAD)"
+                  [[ "$checked_out_sha" == "$SOURCE_SHA" ]] || { echo "Checked out source does not match the validated source SHA"; exit 1; }
+
+            - name: Login to Docker Hub
+              uses: docker/login-action@v4
+              with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Reject an existing candidate tag
+              env:
+                  IMAGE: ${{ env.IMAGE_NAME }}
+                  TAG: ${{ steps.source.outputs.tag }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  inspect_output=""
+                  if inspect_output="$(docker buildx imagetools inspect "$IMAGE:$TAG" 2>&1)"; then
+                    echo "Candidate tag already exists; refusing to overwrite it: $IMAGE:$TAG"
+                    exit 1
+                  elif ! printf '%s' "$inspect_output" | grep -Eiq 'not found|no such manifest|manifest unknown|404'; then
+                    echo "Unable to prove candidate tag is unused: $IMAGE:$TAG"
+                    printf '%s\n' "$inspect_output"
+                    exit 1
+                  fi
+
+    build:
+        needs: prepare
+        name: Build ${{ matrix.platform }} image
+        runs-on: ${{ matrix.runner }}
+        timeout-minutes: 75
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - platform: linux/amd64
+                      runner: ubuntu-latest
+                      artifact_suffix: linux-amd64
+                    - platform: linux/arm64
+                      runner: ubuntu-24.04-arm
+                      artifact_suffix: linux-arm64
+
+        steps:
+            - name: Checkout exact candidate source
+              uses: actions/checkout@v6.0.2
+              with:
+                  ref: ${{ needs.prepare.outputs.source_commit }}
+                  fetch-depth: 1
+                  persist-credentials: false
+
+            - name: Verify checked-out source
+              env:
+                  SOURCE_SHA: ${{ needs.prepare.outputs.source_commit }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  checked_out_sha="$(git rev-parse HEAD)"
+                  [[ "$checked_out_sha" == "$SOURCE_SHA" ]] || { echo "Checked out source does not match the validated source SHA"; exit 1; }
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4.0.0
+
+            - name: Login to Docker Hub
+              uses: docker/login-action@v4
+              with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Build and push image by digest
+              id: build
+              uses: docker/build-push-action@v6.19.2
+              with:
+                  context: .
+                  file: ./Dockerfile
+                  platforms: ${{ matrix.platform }}
+                  push: true
+                  tags: ${{ env.IMAGE_NAME }}
+                  build-args: |
+                      BUILD_HASH=${{ needs.prepare.outputs.source_commit }}
+                  outputs: type=image,push-by-digest=true,name-canonical=true,push=true
+                  labels: |
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.revision=${{ needs.prepare.outputs.source_commit }}
+                      org.opencontainers.image.version=${{ needs.prepare.outputs.tag }}
+                  provenance: mode=max
+                  sbom: true
+
+            - name: Export platform digest
+              env:
+                  PLATFORM_DIGEST: ${{ steps.build.outputs.digest }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  [[ "$PLATFORM_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Build returned an invalid platform digest: $PLATFORM_DIGEST"; exit 1; }
+                  mkdir -p /tmp/digests
+                  touch "/tmp/digests/${PLATFORM_DIGEST#sha256:}"
+
+            - name: Upload platform digest
+              uses: actions/upload-artifact@v4
+              with:
+                  name: candidate-digest-${{ matrix.artifact_suffix }}
+                  path: /tmp/digests/*
+                  if-no-files-found: error
+                  retention-days: 1
+
+    publish_manifest:
+        needs:
+            - prepare
+            - build
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        outputs:
+            digest: ${{ steps.verify.outputs.digest }}
+            reference: ${{ steps.verify.outputs.reference }}
+
+        steps:
+            - name: Download platform digests
+              uses: actions/download-artifact@v4
+              with:
+                  path: /tmp/digests
+                  pattern: candidate-digest-*
+                  merge-multiple: true
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4.0.0
+
+            - name: Login to Docker Hub
+              uses: docker/login-action@v4
+              with:
+                  username: ${{ secrets.DOCKERHUB_USERNAME }}
+                  password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+            - name: Create candidate OCI index
+              id: publish
+              env:
+                  IMAGE: ${{ env.IMAGE_NAME }}
+                  TAG: ${{ needs.prepare.outputs.tag }}
+                  SOURCE_SHA: ${{ needs.prepare.outputs.source_commit }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  shopt -s nullglob
+                  digest_files=(/tmp/digests/*)
+                  if [[ "${#digest_files[@]}" -ne 2 ]]; then
+                    echo "Expected 2 platform digests, found ${#digest_files[@]}"
+                    printf '%s\n' "${digest_files[@]}"
+                    exit 1
+                  fi
+
+                  digest_args=()
+                  for digest_file in "${digest_files[@]}"; do
+                    digest="$(basename "$digest_file")"
+                    [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || { echo "Invalid digest artifact filename: $digest"; exit 1; }
+                    digest_args+=("$IMAGE@sha256:$digest")
+                  done
+
+                  inspect_output=""
+                  if inspect_output="$(docker buildx imagetools inspect "$IMAGE:$TAG" 2>&1)"; then
+                    echo "Candidate tag appeared during the build; refusing to overwrite it: $IMAGE:$TAG"
+                    exit 1
+                  elif ! printf '%s' "$inspect_output" | grep -Eiq 'not found|no such manifest|manifest unknown|404'; then
+                    echo "Unable to prove candidate tag is available for manifest publication: $IMAGE:$TAG"
+                    printf '%s\n' "$inspect_output"
+                    exit 1
+                  fi
+
+                  metadata_file="$RUNNER_TEMP/candidate-index-metadata.json"
+                  docker buildx imagetools create \
+                    --tag "$IMAGE:$TAG" \
+                    --metadata-file "$metadata_file" \
+                    --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+                    --annotation "index:org.opencontainers.image.revision=$SOURCE_SHA" \
+                    --annotation "index:org.opencontainers.image.version=$TAG" \
+                    "${digest_args[@]}"
+                  index_digest="$(jq -er '."containerimage.descriptor".digest' "$metadata_file")"
+                  [[ "$index_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Publication returned an invalid OCI index digest: $index_digest"; exit 1; }
+                  echo "digest=$index_digest" >> "$GITHUB_OUTPUT"
+
+            - name: Verify final OCI index and provenance
+              id: verify
+              env:
+                  IMAGE: ${{ env.IMAGE_NAME }}
+                  TAG: ${{ needs.prepare.outputs.tag }}
+                  SOURCE_SHA: ${{ needs.prepare.outputs.source_commit }}
+                  DIGEST: ${{ steps.publish.outputs.digest }}
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "Manifest returned an invalid OCI index digest"; exit 1; }
+                  raw="$RUNNER_TEMP/candidate-index.json"
+                  docker buildx imagetools inspect "$IMAGE@$DIGEST" --raw > "$raw"
+                  [[ "sha256:$(sha256sum "$raw" | cut -d ' ' -f 1)" == "$DIGEST" ]] || { echo "Registry content does not match the published index digest"; exit 1; }
+                  jq -e \
+                    --arg source "https://github.com/$GITHUB_REPOSITORY" \
+                    --arg revision "$SOURCE_SHA" \
+                    --arg version "$TAG" \
+                    '(.mediaType == "application/vnd.oci.image.index.v1+json") and
+                     (.annotations["org.opencontainers.image.source"] == $source) and
+                     (.annotations["org.opencontainers.image.revision"] == $revision) and
+                     (.annotations["org.opencontainers.image.version"] == $version) and
+                     (any(.manifests[].platform; .os == "linux" and .architecture == "amd64")) and
+                     (any(.manifests[].platform; .os == "linux" and .architecture == "arm64"))' "$raw" >/dev/null
+
+                  reference="$IMAGE@$DIGEST"
+                  echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+                  echo "reference=$reference" >> "$GITHUB_OUTPUT"
+                  {
+                    echo "## Daiana WebUI candidate image"
+                    echo
+                    echo "- Source commit: \`$SOURCE_SHA\`"
+                    echo "- Digest-authoritative reference: \`$reference\`"
+                    echo "- Convenience tag: \`$IMAGE:$TAG\`"
+                    echo "- Platforms: \`linux/amd64\`, \`linux/arm64\`"
+                  } >> "$GITHUB_STEP_SUMMARY"
